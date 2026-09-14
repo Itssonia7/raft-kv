@@ -1,102 +1,107 @@
-python3 -c "
-import urllib.request
-content = '''# raft-kv
+# raft-kv
 
-A distributed, fault-tolerant Key-Value store built from scratch in Go using the **Raft Consensus Protocol** (Ongaro & Ousterhout).
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Consensus](https://img.shields.io/badge/Consensus-Raft-blue)](https://raft.github.io/)
+[![Transport](https://img.shields.io/badge/Transport-gRPC%20%2F%20Protobuf-darkgreen)](https://grpc.io/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Engineered to explore low-level systems fundamentals: consensus invariants, linearizability, network partition handling, and synchronous disk persistence.
+A distributed, fault-tolerant, replicated Key-Value store built from scratch in Go, powered by the **Raft Consensus Protocol** (Ongaro & Ousterhout).
 
----
-
-## System Overview
-
-\`raft-kv\` implements a Replicated State Machine (RSM) architecture:
-* **Consensus Engine (\`pkg/raft\`)**: Pure Raft consensus managing leader election, log replication, and quorum commitments.
-* **State Machine (\`pkg/kvstore\`)**: Decoupled in-memory key-value engine listening to committed commands via Go channels (\`applyCh\`).
-* **Transport (\`pkg/proto\`)**: High-throughput inter-node RPC communication over gRPC and Protocol Buffers.
-* **Storage (\`pkg/kvstore\`)**: Synchronous write-ahead log (WAL) on disk via \`os.File\` and \`fsync\` for crash recovery.
-* **Chaos Harness (\`pkg/chaos\`)**: Network interceptor simulating packet loss, asymmetric latency, and split-brain network partitions.
+Designed to explore low-level systems engineering: linearizable state machine replication, network partition resilience, asynchronous RPC pipelines, and synchronous disk persistence.
 
 ---
 
-## High-Level Architecture
+## Architecture Overview
 
-\`\`\`text
-       +---------------------------------------------+
-       |                 Client CLI                  |
-       +---------------------------------------------+
-                              │ gRPC (Put / Get / Delete)
-                              ▼
+`raft-kv` follows the classic **Replicated State Machine (RSM)** pattern. Consensus is completely decoupled from state machine execution and storage.
+
++---------------------------------------------+
+   |               Client (CLI/API)              |
+   +---------------------------------------------+
+                          │
+                          │ gRPC (Put / Get / Delete)
+                          ▼
+
 +───────────────────────────────────────────────────────────+
-│                        NODE SERVER                        │
+│                        RAFT NODE                          │
 │                                                           │
 │  +─────────────────────────────────────────────────────+  │
-│  │             Raft Consensus Core (Engine)            │  │
-│  │   [Role State]     [Timers]      [Replicated Log]   │  │
+│  │                 Raft Consensus Engine               │  │
+│  │  - Leader Election       - Quorum Tracker           │  │
+│  │  - Randomized Timers     - Replicated Log           │  │
 │  +─────────────────────────────────────────────────────+  │
 │         │                                   │             │
 │         │ gRPC RPCs                         │ applyCh     │
-│         │ (Vote, AppendEntries)             │             │
+│         │ (Vote, AppendEntries)             │ (channel)   │
 │         ▼                                   ▼             │
 │  +─────────────────────+         +─────────────────────+  │
-│  │  Transport Layer    │         │  KV State Machine   │  │
-│  │  (gRPC + Chaos)     │         │  (In-Memory Engine) │  │
+│  │   Transport Layer   │         │     State Machine   │  │
+│  │  (gRPC & Interceptor│         │  (In-Memory Store)  │  │
 │  +─────────────────────+         +─────────────────────+  │
 │         │                                   │             │
 │         ▼                                   ▼             │
 │  +─────────────────────────────────────────────────────+  │
-│  │         Persistent WAL & Point-in-Time Snapshot     │  │
+│  │        Write-Ahead Log (WAL) & Snapshots (fsync)    │  │
 │  +─────────────────────────────────────────────────────+  │
 +───────────────────────────────────────────────────────────+
-\`\`\`
+
+
 
 ---
 
-## Project Directory Structure
+## Core Technical Features
 
-\`\`\`text
+* **Raft Consensus Core**: Leader election with randomized timeouts, term-based voting safety, log replication, and heartbeats.
+* **Concurrency & Safety**: Strictly no blocking network I/O held under mutex locks to prevent deadlocks and head-of-line blocking.
+* **Linearizability**: Safe read and write semantics guaranteeing strongly consistent client interactions across partitions.
+* **Decoupled State Machine**: KV engine consumes committed entries asynchronously via a Go channel interface (`applyCh`).
+* **Crash Resilience & Durability**: Synchronous write-ahead log (WAL) on disk via POSIX `fsync` and snapshot compaction.
+* **Chaos Engineering Harness**: Fault-injection proxy simulating asymmetric network partitions, dropped packets, and latency jitter.
+
+---
+
+## Repository Structure
+
+
 raft-kv/
 ├── cmd/
-│   ├── server/          # Server daemon entrypoint
-│   └── client/          # Interactive CLI client
+│   ├── server/          # Cluster node binary entrypoint
+│   └── client/          # CLI client for cluster interaction
 ├── pkg/
-│   ├── raft/            # Core Raft consensus implementation
-│   ├── kvstore/         # State machine & WAL storage engine
-│   ├── proto/           # Protobuf definitions & generated gRPC stubs
-│   └── chaos/           # Network fault injection proxy / test harness
-├── go.mod
-├── go.sum
+│   ├── raft/            # Core Raft consensus protocol logic
+│   ├── kvstore/         # In-memory key-value state machine
+│   ├── proto/           # Protobuf contracts and generated gRPC stubs
+│   └── chaos/           # Network chaos and partition testing harness
+├── go.mod               # Module configuration
+├── go.sum               # Checksums for external dependencies
 └── README.md
-\`\`\`
 
 ---
 
-## Roadmap & Milestones
+## Project Roadmap
 
-- [x] **Phase 0: Foundation** — Toolchain setup, workspace scaffolding, module initialization.
-- [ ] **Phase 1: Wire Protocol & Node State** — Protobuf contracts, core node struct, and \`RequestVote\` RPC.
-- [ ] **Phase 2: Leader Election & Heartbeats** — Randomized election timers, candidate campaigns, and role transitions.
-- [ ] **Phase 3: Log Replication & Quorum** — \`AppendEntries\` pipeline, log matching consistency checks, and commit advance.
-- [ ] **Phase 4: Key-Value Engine** — Decoupled state machine execution across \`applyCh\`.
-- [ ] **Phase 5: Durability & Compaction** — Disk WAL with synchronous \`fsync\` and snapshot compaction.
-- [ ] **Phase 6: Chaos & Split-Brain Testing** — Partition injection, dropped packets, and recovery verification.
-- [ ] **Phase 7: Client CLI & Routing** — Public API with linearizable reads and follower-to-leader redirects.
+- [x] **Phase 0: Workspace Scaffolding** — Directory layout, Go module setup, Protobuf toolchain.
+- [x] **Phase 1: Wire Protocol** — Protocol Buffer RPC schemas (`RequestVote`, `AppendEntries`, `InstallSnapshot`).
+- [ ] **Phase 2: Raft Node State** — Term management, role transitions (Follower, Candidate, Leader), and thread-safe timers.
+- [ ] **Phase 3: Leader Election** — Randomized election timeouts, candidate voting campaigns, and heartbeat broadcasts.
+- [ ] **Phase 4: Log Replication** — Quorum acknowledgments, log consistency checks, and commit index advance.
+- [ ] **Phase 5: Key-Value State Machine** — Applying committed entries, handling client `Get`/`Put`/`Delete` requests.
+- [ ] **Phase 6: Persistence & Compaction** — Disk-backed WAL, log compaction, and snapshot distribution.
+- [ ] **Phase 7: Fault-Tolerance & Chaos** — Network partition injection and recovery testing.
 
 ---
 
-## Prerequisites
+## Tech Stack
 
-* **Go**: \`1.22+\`
-* **Protobuf Compiler**: \`protoc\` (v3+)
-* **Go Protoc Plugins**: \`protoc-gen-go\`, \`protoc-gen-go-grpc\`
+| Component | Technology |
+|---|---|
+| **Language** | Go (1.22+) |
+| **RPC & Serialization** | gRPC / Protocol Buffers (proto3) |
+| **Concurrency Model** | Goroutines, Channels, sync/atomic primitives |
+| **Persistence** | Custom POSIX WAL (`os.File` + `fsync`) |
 
 ---
 
 ## References
 
 * Ongaro, D., & Ousterhout, J. (2014). *In Search of an Understandable Consensus Algorithm (Extended Version)*. USENIX ATC '14.
-'''
-
-with open('README.md', 'w') as f:
-    f.write(content)
-"
