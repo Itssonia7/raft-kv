@@ -45,7 +45,8 @@ type ApplyMsg struct {
 
 // RaftNode represents an individual peer executing the consensus protocol.
 type RaftNode struct {
-	mu sync.Mutex
+	raftpb.UnimplementedRaftServiceServer
+	mu sync.Mutex	
 
 	// Identity and network topology
 	id    string
@@ -73,6 +74,8 @@ type RaftNode struct {
 	electionTimeout   time.Duration
 	lastHeartbeat     time.Time
 }
+
+
 
 // NewRaftNode creates and initializes a new peer node in the Follower state.
 func NewRaftNode(id string, peers map[string]raftpb.RaftServiceClient, applyCh chan ApplyMsg) *RaftNode {
