@@ -125,6 +125,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *raftpb.AppendEntries
 		} else {
 			rn.commitIndex = lastNewIndex
 		}
+		rn.applyCond.Broadcast()
 	}
 
 	reply.Success = true

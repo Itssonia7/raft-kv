@@ -115,7 +115,7 @@ func (rn *RaftNode) becomeLeader() {
 	go rn.broadcastHeartbeats()
 }
 
-// broadcastHeartbeats sends empty AppendEntries RPCs to all peers.
+// broadcastHeartbeats sends AppendEntries RPCs to replicate logs or serve as heartbeats.
 func (rn *RaftNode) broadcastHeartbeats() {
 	rn.mu.Lock()
 	if rn.role != Leader {
@@ -124,7 +124,6 @@ func (rn *RaftNode) broadcastHeartbeats() {
 	}
 	rn.lastHeartbeat = time.Now()
 	term := rn.currentTerm
-	commitIndex := rn.commitIndex
 
 	peers := make(map[string]raftpb.RaftServiceClient, len(rn.peers))
 	for id, client := range rn.peers {
@@ -139,15 +138,26 @@ func (rn *RaftNode) broadcastHeartbeats() {
 				rn.mu.Unlock()
 				return
 			}
+
 			prevIndex := rn.nextIndex[id] - 1
+			if prevIndex >= uint64(len(rn.log)) {
+				prevIndex = uint64(len(rn.log) - 1)
+			}
 			prevTerm := rn.log[prevIndex].Term
+
+			// Slice entries from prevIndex + 1 to end of log
+			var entries []*raftpb.LogEntry
+			if uint64(len(rn.log)) > prevIndex+1 {
+				entries = append(entries, rn.log[prevIndex+1:]...)
+			}
+
 			req := &raftpb.AppendEntriesArgs{
 				Term:         term,
 				LeaderId:     rn.id,
 				PrevLogIndex: prevIndex,
 				PrevLogTerm:  prevTerm,
-				Entries:      nil, // Heartbeat carries no entries
-				LeaderCommit: commitIndex,
+				Entries:      entries,
+				LeaderCommit: rn.commitIndex,
 			}
 			rn.mu.Unlock()
 
@@ -162,12 +172,58 @@ func (rn *RaftNode) broadcastHeartbeats() {
 			rn.mu.Lock()
 			defer rn.mu.Unlock()
 
+			if rn.role != Leader || rn.currentTerm != term {
+				return
+			}
+
 			if reply.Term > rn.currentTerm {
 				rn.currentTerm = reply.Term
 				rn.role = Follower
 				rn.votedFor = ""
 				rn.resetElectionTimeout()
+				return
+			}
+
+			if reply.Success {
+				newMatch := prevIndex + uint64(len(entries))
+				if newMatch > rn.matchIndex[id] {
+					rn.matchIndex[id] = newMatch
+				}
+				rn.nextIndex[id] = rn.matchIndex[id] + 1
+				rn.checkAndUpdateCommitIndex()
+			} else {
+				// Fast rollback on conflict
+				if reply.ConflictIndex > 0 {
+					rn.nextIndex[id] = reply.ConflictIndex
+				} else if rn.nextIndex[id] > 1 {
+					rn.nextIndex[id]--
+				}
 			}
 		}(peerID, client)
+	}
+}
+
+// checkAndUpdateCommitIndex advances commitIndex if a quorum matches an entry in the current term (§5.3, §5.4.2).
+// Caller must hold rn.mu.
+func (rn *RaftNode) checkAndUpdateCommitIndex() {
+	for N := uint64(len(rn.log) - 1); N > rn.commitIndex; N-- {
+		// Figure 8 safety rule: Leader cannot commit entries from previous terms by counting replicas
+		if rn.log[N].Term != rn.currentTerm {
+			continue
+		}
+
+		matches := 1 // Count self
+		for _, peerMatch := range rn.matchIndex {
+			if peerMatch >= N {
+				matches++
+			}
+		}
+
+		quorum := (len(rn.peers) + 1)/2 + 1
+		if matches >= quorum {
+			rn.commitIndex = N
+			rn.applyCond.Broadcast()
+			break
+		}
 	}
 }
