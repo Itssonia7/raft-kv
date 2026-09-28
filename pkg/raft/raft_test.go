@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"testing"
@@ -89,12 +90,10 @@ func TestLeaderElection(t *testing.T) {
 	nodes, cleanup := setupCluster(t, 3)
 	defer cleanup()
 
-	// Start consensus tickers on all nodes
 	for _, cn := range nodes {
 		cn.node.Start()
 	}
 
-	// Allow election timeouts (150-300ms) and initial heartbeats to settle
 	time.Sleep(1 * time.Second)
 
 	leaderCount := 0
@@ -114,5 +113,57 @@ func TestLeaderElection(t *testing.T) {
 
 	if leaderTerm == 0 {
 		t.Fatalf("expected leader term >= 1, got %d", leaderTerm)
+	}
+}
+
+func TestReplication(t *testing.T) {
+	nodes, cleanup := setupCluster(t, 3)
+	defer cleanup()
+
+	for _, cn := range nodes {
+		cn.node.Start()
+	}
+
+	time.Sleep(1 * time.Second)
+
+	var leader *clusterNode
+	for _, cn := range nodes {
+		_, isLeader := cn.node.GetState()
+		if isLeader {
+			leader = cn
+			break
+		}
+	}
+
+	if leader == nil {
+		t.Fatalf("no leader elected")
+	}
+
+	cmd := []byte("set user_id 42")
+	index, _, isLeader := leader.node.Propose(cmd)
+	if !isLeader {
+		t.Fatalf("node unexpectedly stepped down as leader")
+	}
+
+	if index != 1 {
+		t.Fatalf("expected first entry index to be 1, got %d", index)
+	}
+
+	// Verify all cluster nodes commit and stream the exact command across applyCh
+	for _, cn := range nodes {
+		select {
+		case msg := <-cn.applyCh:
+			if !msg.CommandValid {
+				t.Fatalf("node %s received invalid command message", cn.id)
+			}
+			if msg.CommandIndex != 1 {
+				t.Fatalf("node %s expected command index 1, got %d", cn.id, msg.CommandIndex)
+			}
+			if !bytes.Equal(msg.Command, cmd) {
+				t.Fatalf("node %s command payload mismatch: expected %s, got %s", cn.id, string(cmd), string(msg.Command))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for node %s to apply entry at index %d", cn.id, index)
+		}
 	}
 }
